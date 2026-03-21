@@ -124,26 +124,26 @@ export default function BrowseIssuesPage() {
 
         {/* Filters */}
         <div className="flex flex-wrap gap-4 mb-8">
-          <Select value={filters.city} onValueChange={(v) => handleFilterChange('city', v)}>
+          <Select value={filters.city || "all"} onValueChange={(v) => handleFilterChange('city', v === "all" ? "" : v)}>
             <SelectTrigger className="w-[180px] bg-white" data-testid="filter-city">
               <MapPin className="w-4 h-4 mr-2 text-slate-400" />
               <SelectValue placeholder="All Cities" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Cities</SelectItem>
+              <SelectItem value="all">All Cities</SelectItem>
               {cities.map(city => (
                 <SelectItem key={city} value={city}>{city}</SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          <Select value={filters.category} onValueChange={(v) => handleFilterChange('category', v)}>
+          <Select value={filters.category || "all"} onValueChange={(v) => handleFilterChange('category', v === "all" ? "" : v)}>
             <SelectTrigger className="w-[180px] bg-white" data-testid="filter-category">
               <Tag className="w-4 h-4 mr-2 text-slate-400" />
               <SelectValue placeholder="All Categories" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Categories</SelectItem>
+              <SelectItem value="all">All Categories</SelectItem>
               {categories.map(cat => (
                 <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>
               ))}

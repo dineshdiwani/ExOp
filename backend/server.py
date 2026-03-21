@@ -435,7 +435,9 @@ async def create_issue(issue: IssueCreate, user: dict = Depends(get_current_user
     }
     
     await db.issues.insert_one(issue_doc)
-    return issue_doc
+    
+    # Return clean document without _id
+    return await db.issues.find_one({"issue_id": issue_id}, {"_id": 0})
 
 @api_router.get("/issues")
 async def list_issues(
@@ -541,7 +543,7 @@ async def create_offer(offer: OfferCreate, user: dict = Depends(get_current_user
     # Update issue offers count
     await db.issues.update_one({"issue_id": offer.issue_id}, {"$inc": {"offers_count": 1}})
     
-    return offer_doc
+    return await db.offers.find_one({"offer_id": offer_id}, {"_id": 0})
 
 @api_router.get("/offers/my/list")
 async def get_my_offers(user: dict = Depends(get_current_user)):
@@ -624,7 +626,7 @@ async def create_booking(booking: BookingCreate, user: dict = Depends(get_curren
     # Update issue status
     await db.issues.update_one({"issue_id": offer["issue_id"]}, {"$set": {"status": "in_progress"}})
     
-    return booking_doc
+    return await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
 
 @api_router.get("/bookings")
 async def get_bookings(user: dict = Depends(get_current_user), status: Optional[str] = None):
@@ -799,8 +801,9 @@ async def send_chat_message(message: ChatMessage, user: dict = Depends(get_curre
     # Determine sender type
     sender_type = "client" if booking["client_id"] == user["user_id"] else "expert"
     
+    msg_id = generate_id("msg_")
     msg_doc = {
-        "message_id": generate_id("msg_"),
+        "message_id": msg_id,
         "booking_id": message.booking_id,
         "sender_id": user["user_id"],
         "sender_type": sender_type,
@@ -810,7 +813,7 @@ async def send_chat_message(message: ChatMessage, user: dict = Depends(get_curre
     }
     
     await db.chat_messages.insert_one(msg_doc)
-    return msg_doc
+    return await db.chat_messages.find_one({"message_id": msg_id}, {"_id": 0})
 
 @api_router.get("/chat/messages/{booking_id}")
 async def get_chat_messages(booking_id: str, user: dict = Depends(get_current_user)):
@@ -845,8 +848,9 @@ async def create_review(review: ReviewCreate, user: dict = Depends(get_current_u
     if existing:
         raise HTTPException(status_code=400, detail="Already reviewed")
     
+    review_id = generate_id("rev_")
     review_doc = {
-        "review_id": generate_id("rev_"),
+        "review_id": review_id,
         "booking_id": review.booking_id,
         "client_id": user["user_id"],
         "expert_id": booking["expert_id"],
@@ -866,7 +870,7 @@ async def create_review(review: ReviewCreate, user: dict = Depends(get_current_u
         {"$set": {"avg_rating": round(avg_rating, 2), "ratings_count": len(expert_reviews)}}
     )
     
-    return review_doc
+    return await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
 
 @api_router.get("/reviews/expert/{expert_id}")
 async def get_expert_reviews(expert_id: str):
