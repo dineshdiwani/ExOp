@@ -1,0 +1,190 @@
+{
+  "identity": {
+    "name": "E1: The Anti-AI Designer",
+    "mission": "Create a consultation marketplace that feels like a private, premium clinic, not a generic SaaS.",
+    "core_values": [
+      "Privacy as Luxury",
+      "Trust through Clarity",
+      "Expertise through Typography",
+      "Calm over Clutter"
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "heading": "Outfit, sans-serif",
+      "body": "DM Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scaling": {
+      "h1": "text-5xl md:text-7xl font-bold tracking-tight leading-[1.1]",
+      "h2": "text-4xl md:text-5xl font-semibold tracking-tight",
+      "h3": "text-2xl md:text-3xl font-medium tracking-normal",
+      "body_lg": "text-lg md:text-xl font-normal leading-relaxed text-muted-foreground",
+      "body_base": "text-base font-normal leading-relaxed text-foreground/90",
+      "caption": "text-sm font-medium tracking-wide uppercase text-muted-foreground/80"
+    },
+    "rules": [
+      "Never use Inter for headings.",
+      "Use 'tracking-tight' on all headings larger than 24px.",
+      "Use 'tracking-wide' on all uppercase captions.",
+      "Headings should almost never be pure black (#000000). Use Zinc-900 or Slate-900."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "mode": "light",
+      "primary": {
+        "DEFAULT": "#1e293b",
+        "foreground": "#f8fafc",
+        "50": "#f8fafc",
+        "100": "#f1f5f9",
+        "200": "#e2e8f0",
+        "300": "#cbd5e1",
+        "400": "#94a3b8",
+        "500": "#64748b",
+        "600": "#475569",
+        "700": "#334155",
+        "800": "#1e293b",
+        "900": "#0f172a"
+      },
+      "secondary": {
+        "DEFAULT": "#f1f5f9",
+        "foreground": "#0f172a"
+      },
+      "accent": {
+        "DEFAULT": "#0f766e",
+        "foreground": "#ffffff"
+      },
+      "background": "#ffffff",
+      "foreground": "#020617",
+      "muted": {
+        "DEFAULT": "#f8fafc",
+        "foreground": "#64748b"
+      },
+      "border": "#e2e8f0"
+    },
+    "gradients": {
+      "hero_glow": "bg-gradient-to-tr from-slate-100 via-white to-slate-50",
+      "subtle_mesh": "bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100/20 via-slate-50 to-white"
+    },
+    "rules": [
+      "Avoid 'SaaS Blue' (#3b82f6) as a primary color.",
+      "Use Slate/Zinc scales for neutrals, not pure Grey.",
+      "Trust is conveyed through deep Navy/Slate, not bright Blue.",
+      "Privacy is conveyed through ample whitespace and subtle borders."
+    ]
+  },
+  "visual_enhancers": {
+    "radius": "rounded-xl",
+    "shadows": {
+      "card": "shadow-[0_2px_8px_-2px_rgba(0,0,0,0.05),0_0_1px_rgba(0,0,0,0.1)]",
+      "float": "shadow-[0_20px_40px_-12px_rgba(0,0,0,0.1)]",
+      "inner": "shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)]"
+    },
+    "glass": "bg-white/80 backdrop-blur-xl border border-white/20 shadow-sm",
+    "borders": "border border-slate-200/60"
+  },
+  "layout_strategies": {
+    "marketing": {
+      "grid": "grid grid-cols-1 md:grid-cols-12 gap-8",
+      "container": "container mx-auto px-4 md:px-8 max-w-7xl",
+      "spacing": "py-24 md:py-32"
+    },
+    "dashboard": {
+      "grid": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+      "card_style": "bg-white border border-slate-100 shadow-sm p-6 rounded-xl h-full flex flex-col"
+    },
+    "bento_rules": [
+      "Never create a grid of equal squares.",
+      "Use col-span-2 or row-span-2 to create visual hierarchy.",
+      "Always ensure the bottom of the grid aligns (no jagged edges)."
+    ]
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-6 rounded-lg font-medium transition-all active:scale-95 shadow-sm",
+      "secondary": "bg-white text-foreground border border-input hover:bg-accent hover:text-accent-foreground h-10 px-6 rounded-lg font-medium transition-all shadow-sm",
+      "ghost": "hover:bg-accent hover:text-accent-foreground h-10 px-4 rounded-lg font-medium"
+    },
+    "cards": {
+      "base": "bg-white rounded-xl border border-slate-100 shadow-sm transition-all hover:shadow-md",
+      "interactive": "cursor-pointer hover:border-slate-300 hover:shadow-lg hover:-translate-y-1 transition-all duration-300"
+    },
+    "inputs": {
+      "base": "flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+    }
+  },
+  "image_urls": {
+    "experts": [
+      {
+        "url": "https://images.unsplash.com/photo-1645066928295-2506defde470?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdCUyMGRvY3RvciUyMGNvbnN1bHRhbnQlMjBsYXd5ZXJ8ZW58MHx8fHwxNzc0MDY2MjYxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Male doctor in white coat, confident smile",
+        "category": "expert_profile"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1736939678218-bd648b5ef3bb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdCUyMGRvY3RvciUyMGNvbnN1bHRhbnQlMjBsYXd5ZXJ8ZW58MHx8fHwxNzc0MDY2MjYxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Professional woman in business suit",
+        "category": "expert_profile"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1772987057599-2f1088c1e993?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdCUyMGRvY3RvciUyMGNvbnN1bHRhbnQlMjBsYXd5ZXJ8ZW58MHx8fHwxNzc0MDY2MjYxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Young professional woman with glasses",
+        "category": "expert_profile"
+      }
+    ],
+    "abstract": [
+      {
+        "url": "https://images.unsplash.com/photo-1732197537587-2973f6801969?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwzfHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjAzZCUyMGdlb21ldHJpYyUyMHNoYXBlcyUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc0MDY2MjYyfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract white object flying, minimal",
+        "category": "hero_background"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1767482712476-7b72663a0120?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHw0fHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjAzZCUyMGdlb21ldHJpYyUyMHNoYXBlcyUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc0MDY2MjYyfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract shapes circular pattern",
+        "category": "feature_background"
+      }
+    ],
+    "context": [
+      {
+        "url": "https://images.unsplash.com/photo-1771147445405-153493dca398?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBvZmZpY2UlMjBpbnRlcmlvciUyMGJsdXIlMjBib2tlaHxlbnwwfHx8fDE3NzQwNjYyNjN8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Blurred modern office hallway",
+        "category": "login_background"
+      }
+    ]
+  },
+  "universal_guidelines": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid this.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition. Eg: transition: all.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; }.",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠 for icons.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable.",
+    "Components MUST use named exports (export const ComponentName = ...).",
+    "Pages MUST use default exports (export default function PageName() {...}).",
+    "Use 'sonner' for toasts.",
+    "All interactive elements MUST include data-testid attribute."
+  ],
+  "accessibility": {
+    "contrast": "Ensure all text meets WCAG AA standards (4.5:1).",
+    "focus": "All interactive elements must have a visible focus ring.",
+    "motion": "Respect prefers-reduced-motion."
+  },
+  "tech_stack": {
+    "frontend": "React (JS), Tailwind CSS, Shadcn/UI, Lucide React",
+    "backend": "FastAPI, MongoDB",
+    "auth": "JWT + Google OAuth",
+    "payments": "Razorpay"
+  },
+  "instructions_to_main_agent": [
+    "1. Read this file completely before starting.",
+    "2. Install necessary font packages first (e.g., @fontsource/outfit, @fontsource/dm-sans).",
+    "3. Set up the tailwind.config.js with the colors and fonts defined here.",
+    "4. Override Shadcn default radiuses and colors to match this system.",
+    "5. When building the Landing Page, use the 'Marketing' layout strategy (Tetris Grid).",
+    "6. When building Dashboards, use the 'Dashboard' layout strategy (Bento Grid).",
+    "7. For the 'Expert' vibe, prioritize clean lines, whitespace, and the Slate color palette."
+  ]
+}
