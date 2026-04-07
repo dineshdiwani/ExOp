@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { auth, googleProvider, isFirebaseConfigured } from "@/lib/firebase";
 
 const AuthContext = createContext(null);
 
@@ -65,6 +67,30 @@ export const AuthProvider = ({ children }) => {
     return newUser;
   };
 
+  const loginWithGoogle = async (role = "client") => {
+    if (!isFirebaseConfigured || !auth || !googleProvider) {
+      throw new Error("Google login is not configured");
+    }
+
+    const result = await signInWithPopup(auth, googleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const idToken = credential?.idToken;
+    if (!idToken) {
+      throw new Error("Google ID token not found");
+    }
+
+    const response = await axios.post(`${API_URL}/api/auth/google`, {
+      id_token: idToken,
+      role: role === "expert" ? "expert" : "client",
+    });
+
+    const { access_token, user: userData } = response.data;
+    localStorage.setItem("token", access_token);
+    setToken(access_token);
+    setUser(userData);
+    return userData;
+  };
+
   const logout = async () => {
     try {
       await axios.post(`${API_URL}/api/auth/logout`, {});
@@ -86,6 +112,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     login,
     register,
+    loginWithGoogle,
     logout,
     updateUser,
     checkAuth,
