@@ -14,7 +14,6 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import LandingPage from "@/pages/LandingPage";
 import LoginPage from "@/pages/LoginPage";
 import RegisterPage from "@/pages/RegisterPage";
-import AuthCallback from "@/pages/AuthCallback";
 import ClientDashboard from "@/pages/ClientDashboard";
 import ExpertDashboard from "@/pages/ExpertDashboard";
 import AdminDashboard from "@/pages/AdminDashboard";
@@ -55,16 +54,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   return children;
 };
 
-// App Router - handles session_id detection
 const AppRouter = () => {
-  const location = useLocation();
-  
-  // CRITICAL: Check URL fragment for session_id synchronously during render
-  // This prevents race conditions with ProtectedRoute
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
-  }
-
   return (
     <Routes>
       {/* Public Routes */}

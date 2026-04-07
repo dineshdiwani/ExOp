@@ -20,13 +20,6 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   const checkAuth = useCallback(async () => {
-    // CRITICAL: If returning from OAuth callback, skip the /me check
-    // AuthCallback will exchange the session_id and establish the session first
-    if (window.location.hash?.includes('session_id=')) {
-      setLoading(false);
-      return;
-    }
-
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
       setLoading(false);
@@ -72,27 +65,9 @@ export const AuthProvider = ({ children }) => {
     return newUser;
   };
 
-  const loginWithGoogle = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + '/dashboard';
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
-  const processOAuthSession = async (sessionId) => {
-    const response = await axios.post(`${API_URL}/api/auth/session`, 
-      { session_id: sessionId },
-      { withCredentials: true }
-    );
-    const { user: userData, session_token } = response.data;
-    localStorage.setItem('token', session_token);
-    setToken(session_token);
-    setUser(userData);
-    return userData;
-  };
-
   const logout = async () => {
     try {
-      await axios.post(`${API_URL}/api/auth/logout`, {}, { withCredentials: true });
+      await axios.post(`${API_URL}/api/auth/logout`, {});
     } catch (error) {
       console.error('Logout error:', error);
     }
@@ -111,8 +86,6 @@ export const AuthProvider = ({ children }) => {
     loading,
     login,
     register,
-    loginWithGoogle,
-    processOAuthSession,
     logout,
     updateUser,
     checkAuth,

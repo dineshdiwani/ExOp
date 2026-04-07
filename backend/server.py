@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
-import httpx
 import json
 import asyncio
 
@@ -153,31 +152,11 @@ async def ensure_default_admin():
     logger.info("Seeded default admin account for %s", admin_email)
 
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    # Check cookie first
-    token = request.cookies.get("session_token")
-    
-    # Then check Authorization header
-    if not token and credentials:
-        token = credentials.credentials
+    token = credentials.credentials if credentials else None
     
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    # Try session token from Emergent Auth first
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if session:
-        expires_at = session.get("expires_at")
-        if isinstance(expires_at, str):
-            expires_at = datetime.fromisoformat(expires_at)
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
-            raise HTTPException(status_code=401, detail="Session expired")
-        user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-        if user:
-            return user
-    
-    # Try JWT token
+
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
@@ -198,31 +177,8 @@ async def require_role(user: dict, roles: List[str]):
 # ===================
 
 async def moderate_content(text: str) -> Dict[str, Any]:
-    """Use OpenAI GPT-5.2 to moderate content"""
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            return {"approved": True, "reason": "Moderation skipped - no API key"}
-        
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"moderation_{generate_id()}",
-            system_message="You are a content moderator. Analyze the text and respond with JSON: {\"approved\": true/false, \"reason\": \"reason if rejected\", \"category\": \"spam/abuse/inappropriate/ok\"}"
-        ).with_model("openai", "gpt-5.2")
-        
-        response = await chat.send_message(UserMessage(text=f"Moderate this content: {text}"))
-        
-        # Parse response
-        try:
-            result = json.loads(response)
-            return result
-        except:
-            return {"approved": True, "reason": "Could not parse moderation response"}
-    except Exception as e:
-        logger.error(f"Moderation error: {e}")
-        return {"approved": True, "reason": f"Moderation error: {str(e)}"}
+    """Placeholder moderation until a replacement provider is wired in."""
+    return {"approved": True, "reason": "Moderation disabled"}
 
 # ===================
 # AUTH ROUTES
@@ -293,99 +249,14 @@ async def login(credentials: UserLogin):
     
     return TokenResponse(access_token=token, user=user)
 
-@api_router.post("/auth/session")
-async def process_session(request: Request):
-    """Process Emergent Auth session_id and create session"""
-    body = await request.json()
-    session_id = body.get("session_id")
-    
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-    
-    # Call Emergent Auth to get session data
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": session_id}
-        )
-        
-        if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid session")
-        
-        session_data = response.json()
-    
-    # Check if user exists
-    email = session_data["email"]
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    
-    if not user:
-        # Create new user
-        user_id = generate_id("user_")
-        user = {
-            "user_id": user_id,
-            "email": email,
-            "name": session_data.get("name", ""),
-            "alias": session_data.get("name", f"User_{user_id[:6]}"),
-            "picture": session_data.get("picture"),
-            "role": "client",  # Default role for OAuth users
-            "is_anonymous": False,
-            "city": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "is_active": True
-        }
-        await db.users.insert_one(user)
-    else:
-        user_id = user["user_id"]
-        # Update user info
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {
-                "name": session_data.get("name", user.get("name")),
-                "picture": session_data.get("picture", user.get("picture"))
-            }}
-        )
-    
-    # Store session
-    session_token = session_data.get("session_token", generate_id("sess_"))
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    
-    await db.user_sessions.update_one(
-        {"user_id": user_id},
-        {"$set": {
-            "session_token": session_token,
-            "expires_at": expires_at.isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
-    
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    
-    from fastapi.responses import JSONResponse
-    response = JSONResponse(content={"user": user, "session_token": session_token})
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-        max_age=7 * 24 * 60 * 60
-    )
-    return response
-
 @api_router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
     user.pop("password_hash", None)
     return user
 
 @api_router.post("/auth/logout")
-async def logout(request: Request, user: dict = Depends(get_current_user)):
-    await db.user_sessions.delete_one({"user_id": user["user_id"]})
-    from fastapi.responses import JSONResponse
-    response = JSONResponse(content={"message": "Logged out"})
-    response.delete_cookie("session_token")
-    return response
+async def logout(user: dict = Depends(get_current_user)):
+    return {"message": "Logged out"}
 
 # ===================
 # USER ROUTES
