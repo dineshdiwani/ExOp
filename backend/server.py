@@ -14,6 +14,8 @@ import jwt
 import bcrypt
 import json
 import asyncio
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -56,6 +58,10 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+    role: str = "client"
 
 class ExpertProfile(BaseModel):
     user_id: str
@@ -247,6 +253,91 @@ async def login(credentials: UserLogin):
     token = create_token(user["user_id"], user["role"])
     user.pop("password_hash", None)
     
+    return TokenResponse(access_token=token, user=user)
+
+@api_router.post("/auth/google", response_model=TokenResponse)
+async def google_login(payload: GoogleLoginRequest):
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    firebase_project_id = os.environ.get("FIREBASE_PROJECT_ID")
+    token_info = None
+
+    try:
+        if google_client_id:
+            token_info = id_token.verify_oauth2_token(
+                payload.id_token,
+                google_requests.Request(),
+                google_client_id,
+            )
+    except Exception:
+        token_info = None
+
+    if token_info is None and firebase_project_id:
+        try:
+            token_info = id_token.verify_firebase_token(
+                payload.id_token,
+                google_requests.Request(),
+                firebase_project_id,
+            )
+        except Exception:
+            token_info = None
+
+    if token_info is None:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    email = token_info.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Google account email not found")
+
+    requested_role = payload.role if payload.role in ["client", "expert"] else "client"
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+
+    if not user:
+        user_id = generate_id("user_")
+        user = {
+            "user_id": user_id,
+            "email": email,
+            "name": token_info.get("name", ""),
+            "alias": token_info.get("name") or f"User_{user_id[:6]}",
+            "picture": token_info.get("picture"),
+            "role": requested_role,
+            "is_anonymous": False,
+            "city": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "is_active": True
+        }
+        await db.users.insert_one(user)
+    else:
+        user_id = user["user_id"]
+        updates = {
+            "name": token_info.get("name", user.get("name")),
+            "picture": token_info.get("picture", user.get("picture")),
+        }
+        if requested_role in ["client", "expert"] and requested_role != user.get("role") and user.get("role") != "admin":
+            updates["role"] = requested_role
+        await db.users.update_one({"user_id": user_id}, {"$set": updates})
+        user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+
+    if user["role"] == "expert":
+        existing_profile = await db.expert_profiles.find_one({"user_id": user["user_id"]})
+        if not existing_profile:
+            await db.expert_profiles.insert_one({
+                "profile_id": generate_id("expert_"),
+                "user_id": user["user_id"],
+                "expertise": [],
+                "experience_years": 0,
+                "bio": "",
+                "hourly_rate": 500,
+                "cities": [],
+                "is_verified": False,
+                "kyc_status": "pending",
+                "total_consultations": 0,
+                "avg_rating": 0.0,
+                "ratings_count": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+    token = create_token(user["user_id"], user["role"])
+    user.pop("password_hash", None)
     return TokenResponse(access_token=token, user=user)
 
 @api_router.get("/auth/me")
