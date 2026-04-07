@@ -124,6 +124,34 @@ def create_token(user_id: str, role: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+async def ensure_default_admin():
+    """Create the documented default admin account if it doesn't exist."""
+    admin_email = os.environ.get("DEFAULT_ADMIN_EMAIL", "admin@expertopinion.com")
+    admin_password = os.environ.get("DEFAULT_ADMIN_PASSWORD", "admin123")
+    admin_name = os.environ.get("DEFAULT_ADMIN_NAME", "Platform Admin")
+    admin_alias = os.environ.get("DEFAULT_ADMIN_ALIAS", "Admin")
+
+    existing_admin = await db.users.find_one({"email": admin_email}, {"_id": 0})
+    if existing_admin:
+        return
+
+    admin_user = {
+        "user_id": generate_id("user_"),
+        "email": admin_email,
+        "password_hash": hash_password(admin_password),
+        "name": admin_name,
+        "alias": admin_alias,
+        "role": "admin",
+        "is_anonymous": False,
+        "city": None,
+        "picture": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_active": True
+    }
+
+    await db.users.insert_one(admin_user)
+    logger.info("Seeded default admin account for %s", admin_email)
+
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     # Check cookie first
     token = request.cookies.get("session_token")
@@ -1055,6 +1083,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_tasks():
+    await ensure_default_admin()
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
