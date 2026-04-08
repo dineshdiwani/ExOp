@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Shield, Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,8 +8,11 @@ import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 
 export default function LoginPage() {
+  const [searchParams] = useSearchParams();
+  const defaultRole = searchParams.get('role') === 'expert' ? 'expert' : 'client';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [role, setRole] = useState(defaultRole);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -18,6 +21,17 @@ export default function LoginPage() {
   const location = useLocation();
 
   const from = location.state?.from?.pathname || '/dashboard';
+
+  useEffect(() => {
+    const roleFromQuery = searchParams.get('role');
+    setRole(roleFromQuery === 'expert' ? 'expert' : 'client');
+  }, [searchParams]);
+
+  const getDashboardPath = (userRole) => {
+    if (userRole === 'admin') return '/admin';
+    if (userRole === 'expert') return '/expert';
+    return '/dashboard';
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -30,11 +44,13 @@ export default function LoginPage() {
     try {
       const user = await login(email, password);
       toast.success('Welcome back!');
-      
-      // Navigate based on role
-      if (user.role === 'admin') navigate('/admin');
-      else if (user.role === 'expert') navigate('/expert');
-      else navigate(from);
+
+      if (location.state?.from?.pathname) {
+        navigate(from);
+        return;
+      }
+
+      navigate(getDashboardPath(user.role));
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Invalid credentials');
     } finally {
@@ -45,10 +61,8 @@ export default function LoginPage() {
   const handleGoogleLogin = async () => {
     setGoogleLoading(true);
     try {
-      const user = await loginWithGoogle('client');
-      if (user.role === 'admin') navigate('/admin', { replace: true });
-      else if (user.role === 'expert') navigate('/expert', { replace: true });
-      else navigate('/dashboard', { replace: true });
+      const user = await loginWithGoogle(role);
+      navigate(getDashboardPath(user.role), { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || error.message || 'Google login failed');
     } finally {
@@ -74,8 +88,31 @@ export default function LoginPage() {
             Welcome back
           </h1>
           <p className="text-slate-600 mb-8">
-            Sign in to continue to your account
+            Sign in as a {role === 'expert' ? 'verified expert' : 'client'} to continue
           </p>
+
+          <div className="flex p-1 bg-slate-100 rounded-lg mb-6">
+            <button
+              type="button"
+              onClick={() => setRole('client')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+                role === 'client' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+              }`}
+              data-testid="role-client-btn"
+            >
+              I am a client
+            </button>
+            <button
+              type="button"
+              onClick={() => setRole('expert')}
+              className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+                role === 'expert' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+              }`}
+              data-testid="role-expert-btn"
+            >
+              I am an expert
+            </button>
+          </div>
 
           <div className="mb-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
@@ -176,10 +213,12 @@ export default function LoginPage() {
               <Shield className="w-10 h-10 text-white" />
             </div>
             <h2 className="text-3xl font-bold mb-4" style={{ fontFamily: 'Outfit' }}>
-              Your privacy matters
+              {role === 'expert' ? 'Return to your practice' : 'Your privacy matters'}
             </h2>
             <p className="text-slate-300 max-w-sm mx-auto">
-              Get expert advice without revealing your identity. Our platform ensures complete anonymity.
+              {role === 'expert'
+                ? 'Pick up client conversations, review open issues, and manage bookings from your expert dashboard.'
+                : 'Get expert advice without revealing your identity. Our platform ensures complete anonymity.'}
             </p>
           </div>
         </div>
