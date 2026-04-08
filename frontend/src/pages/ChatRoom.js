@@ -117,7 +117,7 @@ export default function ChatRoom() {
         clearInterval(pollIntervalRef.current);
       }
     };
-  }, [fetchData, refreshRoomState]);
+  }, [bookingId]);
 
   useEffect(() => {
     scrollToBottom();
