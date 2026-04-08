@@ -22,7 +22,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
 
   const getDashboardLink = () => {
-    if (!user) return '/login';
+    if (!user) return '/register';
     if (user.role === 'admin') return '/admin';
     if (user.role === 'expert') return '/expert';
     return '/dashboard';
@@ -59,15 +59,10 @@ export default function LandingPage() {
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
               ) : (
-                <>
-                  <Button variant="ghost" onClick={() => navigate('/login')} data-testid="login-btn">
-                    Sign In
-                  </Button>
-                  <Button onClick={() => navigate('/register')} data-testid="get-started-btn">
-                    Get Started
-                    <ArrowRight className="w-4 h-4 ml-2" />
-                  </Button>
-                </>
+                <Button onClick={() => navigate('/register')} data-testid="get-started-btn">
+                  Get Started
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
               )}
             </div>
           </div>
