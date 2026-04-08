@@ -190,12 +190,16 @@ export default function ChatRoom() {
 
   const refreshRoomState = useCallback(async () => {
     try {
-      const [messagesRes, callsRes] = await Promise.all([
+      const [messagesRes, callsRes] = await Promise.allSettled([
         axios.get(`${API_URL}/api/chat/messages/${bookingId}`),
         axios.get(`${API_URL}/api/calls/${bookingId}`)
       ]);
-      setMessages(messagesRes.data || []);
-      setCallRequests(callsRes.data || []);
+      if (messagesRes.status === 'fulfilled') {
+        setMessages(messagesRes.value.data || []);
+      }
+      if (callsRes.status === 'fulfilled') {
+        setCallRequests(callsRes.value.data || []);
+      }
     } catch (error) {
       console.error('Error refreshing room state:', error);
     }
@@ -212,14 +216,18 @@ export default function ChatRoom() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [bookingRes, messagesRes, callsRes] = await Promise.all([
+      const [bookingRes, messagesRes, callsRes] = await Promise.allSettled([
         axios.get(`${API_URL}/api/bookings/${bookingId}`),
         axios.get(`${API_URL}/api/chat/messages/${bookingId}`),
         axios.get(`${API_URL}/api/calls/${bookingId}`)
       ]);
-      setBooking(bookingRes.data);
-      setMessages(messagesRes.data || []);
-      setCallRequests(callsRes.data || []);
+      if (bookingRes.status !== 'fulfilled' || messagesRes.status !== 'fulfilled') {
+        throw new Error('Failed to load core chat data');
+      }
+
+      setBooking(bookingRes.value.data);
+      setMessages(messagesRes.value.data || []);
+      setCallRequests(callsRes.status === 'fulfilled' ? (callsRes.value.data || []) : []);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load chat');

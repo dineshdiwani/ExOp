@@ -1462,7 +1462,11 @@ async def create_call_request(call_request: CallRequestCreate, user: dict = Depe
 
 @api_router.get("/calls/{booking_id}")
 async def list_call_requests(booking_id: str, user: dict = Depends(get_current_user)):
-    await get_booking_for_call(booking_id, user)
+    booking = await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    if booking["client_id"] != user["user_id"] and booking["expert_id"] != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
     return await get_latest_call_requests(booking_id)
 
 @api_router.post("/calls/{call_id}/accept")
