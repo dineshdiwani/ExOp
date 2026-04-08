@@ -221,13 +221,16 @@ export default function ChatRoom() {
         axios.get(`${API_URL}/api/chat/messages/${bookingId}`),
         axios.get(`${API_URL}/api/calls/${bookingId}`)
       ]);
-      if (bookingRes.status !== 'fulfilled' || messagesRes.status !== 'fulfilled') {
-        throw new Error('Failed to load core chat data');
+      if (bookingRes.status !== 'fulfilled') {
+        throw new Error('Failed to load booking for chat');
       }
 
       setBooking(bookingRes.value.data);
-      setMessages(messagesRes.value.data || []);
+      setMessages(messagesRes.status === 'fulfilled' ? (messagesRes.value.data || []) : []);
       setCallRequests(callsRes.status === 'fulfilled' ? (callsRes.value.data || []) : []);
+      if (messagesRes.status !== 'fulfilled') {
+        toast.error('Chat messages could not be loaded. You can still use call controls.');
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load chat');
