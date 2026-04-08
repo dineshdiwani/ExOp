@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Shield, Search, MessageSquare, Calendar, Star, Bell, LogOut, User, Clock, MapPin, Tag, Filter, DollarSign } from 'lucide-react';
+import { Shield, Search, MessageSquare, Calendar, Star, LogOut, User, Clock, MapPin, Tag, Filter, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import NotificationMenu from '@/components/NotificationMenu';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 
@@ -117,9 +118,7 @@ export default function ExpertDashboard() {
             </Link>
 
             <div className="flex items-center gap-4">
-              <Button variant="ghost" size="icon" data-testid="notifications-btn">
-                <Bell className="w-5 h-5" />
-              </Button>
+              <NotificationMenu />
               <Link to="/profile">
                 <Button variant="ghost" size="icon" data-testid="profile-btn">
                   <User className="w-5 h-5" />

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import { Shield, ArrowLeft, Calendar, Clock, User, CreditCard, MessageSquare, Check, AlertCircle } from 'lucide-react';
+import { Shield, ArrowLeft, Calendar, Clock, User, CreditCard, MessageSquare, Check, AlertCircle, PhoneCall } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +9,15 @@ import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
+
+const CALL_AUDIT_LABELS = {
+  call_requested: 'Client requested call',
+  call_accepted: 'Expert accepted call',
+  call_rejected: 'Expert rejected call',
+  call_cancelled: 'Client cancelled call',
+  call_missed: 'Call request timed out',
+  call_summary_submitted: 'Expert submitted post-call summary',
+};
 
 export default function BookingPage() {
   const { bookingId } = useParams();
@@ -165,20 +174,31 @@ export default function BookingPage() {
             <div className="p-4 border border-slate-100 rounded-lg">
               <h4 className="font-medium text-slate-900 mb-3">Payment Summary</h4>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Consultation Fee</span>
-                  <span className="text-slate-900">₹{booking.price}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Platform Fee (15%)</span>
-                  <span className="text-slate-900">₹{booking.platform_fee}</span>
-                </div>
-                <div className="border-t border-slate-100 pt-2 mt-2">
-                  <div className="flex justify-between font-medium">
-                    <span className="text-slate-900">Total</span>
-                    <span className="text-teal-600 text-lg">₹{booking.price}</span>
+                {isClient ? (
+                  <div className="border-t border-slate-100 pt-2 mt-2">
+                    <div className="flex justify-between font-medium">
+                      <span className="text-slate-900">Total Consultation Fee</span>
+                      <span className="text-teal-600 text-lg">₹{booking.price}</span>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Consultation Fee</span>
+                      <span className="text-slate-900">₹{booking.price}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Platform Fee (15%)</span>
+                      <span className="text-slate-900">₹{booking.platform_fee}</span>
+                    </div>
+                    <div className="border-t border-slate-100 pt-2 mt-2">
+                      <div className="flex justify-between font-medium">
+                        <span className="text-slate-900">Total</span>
+                        <span className="text-teal-600 text-lg">₹{booking.price}</span>
+                      </div>
+                    </div>
+                  </>
+                )}
                 {isExpert && (
                   <div className="flex justify-between text-teal-600 mt-2">
                     <span>Your Payout</span>
@@ -187,6 +207,16 @@ export default function BookingPage() {
                 )}
               </div>
             </div>
+
+            {booking.call_summary && (
+              <div className="p-4 border border-slate-100 rounded-lg">
+                <h4 className="font-medium text-slate-900 mb-2">Post-call Summary</h4>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{booking.call_summary.content}</p>
+                <p className="text-xs text-slate-500 mt-2">
+                  Submitted on {new Date(booking.call_summary.created_at).toLocaleString()}
+                </p>
+              </div>
+            )}
 
             {/* Payment Status */}
             {booking.payment_status === 'pending' && isClient && (
@@ -211,6 +241,43 @@ export default function BookingPage() {
                 </div>
               </div>
             )}
+
+            <div className="p-4 border border-slate-100 rounded-lg">
+              <h4 className="font-medium text-slate-900 mb-3 flex items-center gap-2">
+                <PhoneCall className="w-4 h-4 text-teal-600" />
+                Call Activity
+              </h4>
+              {!booking.call_audit || booking.call_audit.length === 0 ? (
+                <p className="text-sm text-slate-500">No call activity recorded yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {[...booking.call_audit].reverse().map((event) => (
+                    <div
+                      key={event.event_id}
+                      className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2"
+                      data-testid={`call-audit-${event.event_id}`}
+                    >
+                      <p className="text-sm font-medium text-slate-900">
+                        {CALL_AUDIT_LABELS[event.event_type] || event.event_type}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {new Date(event.created_at).toLocaleString()}
+                      </p>
+                      {event.metadata?.call_type && (
+                        <p className="text-xs text-slate-600 mt-1">
+                          Type: {event.metadata.call_type}
+                        </p>
+                      )}
+                      {event.metadata?.reason && (
+                        <p className="text-xs text-slate-600 mt-1">
+                          Reason: {event.metadata.reason}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Actions */}
             <div className="flex flex-wrap gap-3 pt-4 border-t border-slate-100">
@@ -289,3 +356,4 @@ export default function BookingPage() {
     </div>
   );
 }
+

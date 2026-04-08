@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Shield, Plus, MessageSquare, Calendar, ChevronRight, Bell, LogOut, User, Clock, MapPin, Tag } from 'lucide-react';
+import { Shield, Plus, MessageSquare, Calendar, ChevronRight, LogOut, User, Clock, MapPin, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import NotificationMenu from '@/components/NotificationMenu';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 
@@ -76,9 +77,7 @@ export default function ClientDashboard() {
             </Link>
 
             <div className="flex items-center gap-4">
-              <Button variant="ghost" size="icon" data-testid="notifications-btn">
-                <Bell className="w-5 h-5" />
-              </Button>
+              <NotificationMenu />
               <Link to="/profile">
                 <Button variant="ghost" size="icon" data-testid="profile-btn">
                   <User className="w-5 h-5" />

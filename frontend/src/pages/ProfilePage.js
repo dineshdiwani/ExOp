@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Shield, User, Save, ArrowLeft, MapPin, Mail, Briefcase, Plus, X } from 'lucide-react';
+import { Shield, User, Save, ArrowLeft, MapPin, Mail, Briefcase, Plus, X, Phone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -118,7 +118,8 @@ export default function ProfilePage() {
           expertise: expertProfile.expertise,
           experience_years: expertProfile.experience_years,
           hourly_rate: expertProfile.hourly_rate,
-          cities: expertProfile.cities
+          cities: expertProfile.cities,
+          whatsapp_number: expertProfile.whatsapp_number || ''
         });
       }
 
@@ -265,6 +266,21 @@ export default function ProfilePage() {
                       data-testid="rate-input"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <Label>WhatsApp Number (with country code)</Label>
+                  <Input
+                    value={expertProfile.whatsapp_number || ''}
+                    onChange={(e) => handleExpertProfileChange('whatsapp_number', e.target.value)}
+                    placeholder="e.g. 919876543210"
+                    className="mt-1.5"
+                    data-testid="whatsapp-number-input"
+                  />
+                  <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                    <Phone className="w-3 h-3" />
+                    Used for WhatsApp call handoff after you accept a client call request.
+                  </p>
                 </div>
 
                 {/* Expertise */}

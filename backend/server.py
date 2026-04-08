@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import socketio
 import os
 import logging
 from pathlib import Path
@@ -14,6 +15,7 @@ import jwt
 import bcrypt
 import json
 import asyncio
+from urllib.parse import parse_qs
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -37,6 +39,7 @@ PLATFORM_COMMISSION = float(os.environ.get('PLATFORM_COMMISSION_PERCENT', 15)) /
 app = FastAPI(title="ExpertOpinion API")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -70,6 +73,7 @@ class ExpertProfile(BaseModel):
     bio: str = ""
     hourly_rate: int = 500
     cities: List[str] = []
+    whatsapp_number: str = ""
     is_verified: bool = False
     kyc_status: str = "pending"  # pending, submitted, approved, rejected
     total_consultations: int = 0
@@ -97,6 +101,19 @@ class BookingCreate(BaseModel):
 class ChatMessage(BaseModel):
     booking_id: str
     content: str
+
+class CallRequestCreate(BaseModel):
+    booking_id: str
+    call_type: str  # voice, video
+
+class CallRequestAction(BaseModel):
+    reason: Optional[str] = None
+
+class CallSummaryCreate(BaseModel):
+    content: str
+
+class NotificationReadRequest(BaseModel):
+    notification_ids: List[str] = []
 
 class ReviewCreate(BaseModel):
     booking_id: str
@@ -178,6 +195,317 @@ async def require_role(user: dict, roles: List[str]):
     if user.get("role") not in roles:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+async def get_user_from_token(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0, "password_hash": 0})
+        return user
+    except Exception:
+        return None
+
+CALL_REQUEST_EXPIRE_SECONDS = 30
+CALL_REQUEST_RETRY_COOLDOWN_SECONDS = 120
+MAX_CALL_REQUESTS_PER_BOOKING = 3
+BOOKING_CALL_ENABLED_STATUSES = {"confirmed", "in_progress"}
+CALL_REQUEST_ACTIVE_STATUSES = {"requested", "ringing"}
+CALL_REQUEST_TERMINAL_STATUSES = {"accepted", "rejected", "missed", "cancelled", "ended"}
+NOTIFICATION_CATEGORIES = {
+    "offer",
+    "booking",
+    "payment",
+    "call",
+    "call_reminder",
+    "chat",
+    "review",
+    "system"
+}
+
+async def get_booking_for_call(booking_id: str, user: dict) -> dict:
+    booking = await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    if booking["client_id"] != user["user_id"] and booking["expert_id"] != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    if booking["status"] not in BOOKING_CALL_ENABLED_STATUSES:
+        raise HTTPException(status_code=400, detail="Calls are only available for active consultations")
+
+    if booking.get("payment_status") != "paid":
+        raise HTTPException(status_code=400, detail="Calls are only available after payment is completed")
+
+    return booking
+
+async def expire_stale_call_requests(booking_id: str):
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=CALL_REQUEST_EXPIRE_SECONDS)
+    stale_requests = await db.call_requests.find(
+        {
+            "booking_id": booking_id,
+            "status": {"$in": list(CALL_REQUEST_ACTIVE_STATUSES)},
+            "created_at_dt": {"$lte": cutoff}
+        },
+        {"_id": 0, "created_at_dt": 0}
+    ).to_list(100)
+    if not stale_requests:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.call_requests.update_many(
+        {
+            "booking_id": booking_id,
+            "status": {"$in": list(CALL_REQUEST_ACTIVE_STATUSES)},
+            "created_at_dt": {"$lte": cutoff}
+        },
+        {
+            "$set": {
+                "status": "missed",
+                "resolved_at": now_iso,
+                "resolution_reason": "No response from expert"
+            }
+        }
+    )
+
+    for stale in stale_requests:
+        stale["status"] = "missed"
+        stale["resolved_at"] = now_iso
+        stale["resolution_reason"] = "No response from expert"
+        await append_call_audit(
+            booking_id=stale["booking_id"],
+            event_type="call_missed",
+            actor_user_id=stale.get("expert_id", ""),
+            metadata={"call_id": stale["call_id"], "call_type": stale["call_type"]}
+        )
+        await emit_call_event(stale["booking_id"], "call_missed", stale)
+        await create_notifications_bulk([
+            {
+                "user_id": stale["client_id"],
+                "category": "call",
+                "event_type": "call_missed",
+                "title": "Call request missed",
+                "body": "Your call request was not answered in time.",
+                "booking_id": stale["booking_id"],
+                "issue_id": stale.get("issue_id"),
+                "call_id": stale["call_id"],
+            },
+            {
+                "user_id": stale["expert_id"],
+                "category": "call",
+                "event_type": "call_missed",
+                "title": "Missed client call request",
+                "body": "A client call request expired before response.",
+                "booking_id": stale["booking_id"],
+                "issue_id": stale.get("issue_id"),
+                "call_id": stale["call_id"],
+            }
+        ])
+
+async def get_latest_call_requests(booking_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    await expire_stale_call_requests(booking_id)
+    requests = await db.call_requests.find(
+        {"booking_id": booking_id},
+        {"_id": 0, "created_at_dt": 0}
+    ).sort("created_at", -1).to_list(limit)
+    return requests
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+async def append_call_audit(booking_id: str, event_type: str, actor_user_id: str, metadata: Dict[str, Any]):
+    audit_entry = {
+        "event_id": generate_id("cae_"),
+        "event_type": event_type,
+        "actor_user_id": actor_user_id,
+        "metadata": metadata,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.bookings.update_one(
+        {"booking_id": booking_id},
+        {"$push": {"call_audit": {"$each": [audit_entry], "$slice": -100}}}
+    )
+
+async def emit_call_event(booking_id: str, event_name: str, call_payload: Dict[str, Any]):
+    payload = {
+        "booking_id": booking_id,
+        "event": event_name,
+        "call": call_payload
+    }
+    await sio.emit("call_event", payload, room=f"booking_{booking_id}")
+    target_user_id = call_payload.get("target_user_id")
+    if target_user_id:
+        await sio.emit("call_event", payload, room=f"user_{target_user_id}")
+
+def parse_slot_datetime(selected_slot: Dict[str, Any]) -> Optional[datetime]:
+    if not selected_slot:
+        return None
+    date_raw = selected_slot.get("date")
+    time_raw = selected_slot.get("start_time")
+    if not date_raw or not time_raw:
+        return None
+
+    for date_fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            date_obj = datetime.strptime(date_raw, date_fmt).date()
+            break
+        except ValueError:
+            date_obj = None
+    if not date_obj:
+        return None
+
+    parsed_time = None
+    for time_fmt in ("%H:%M", "%I:%M %p", "%I:%M%p"):
+        try:
+            parsed_time = datetime.strptime(time_raw.strip(), time_fmt).time()
+            break
+        except ValueError:
+            continue
+    if not parsed_time:
+        return None
+
+    return datetime.combine(date_obj, parsed_time, tzinfo=timezone.utc)
+
+async def create_notification(
+    user_id: str,
+    category: str,
+    event_type: str,
+    title: str,
+    body: str,
+    booking_id: Optional[str] = None,
+    issue_id: Optional[str] = None,
+    offer_id: Optional[str] = None,
+    call_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    dedupe_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    if category not in NOTIFICATION_CATEGORIES:
+        category = "system"
+
+    if dedupe_key:
+        existing = await db.notifications.find_one({"user_id": user_id, "dedupe_key": dedupe_key}, {"_id": 0})
+        if existing:
+            return None
+
+    notification_doc = {
+        "notification_id": generate_id("notif_"),
+        "user_id": user_id,
+        "category": category,
+        "event_type": event_type,
+        "title": title,
+        "body": body,
+        "booking_id": booking_id,
+        "issue_id": issue_id,
+        "offer_id": offer_id,
+        "call_id": call_id,
+        "metadata": metadata or {},
+        "is_read": False,
+        "read_at": None,
+        "dedupe_key": dedupe_key,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.notifications.insert_one(notification_doc)
+    await sio.emit("notification_event", notification_doc, room=f"user_{user_id}")
+    return notification_doc
+
+async def create_notifications_bulk(notifications: List[Dict[str, Any]]):
+    for notif in notifications:
+        await create_notification(**notif)
+
+async def sync_due_call_reminders_for_user(user: dict):
+    now = datetime.now(timezone.utc)
+    if user.get("role") == "client":
+        query = {"client_id": user["user_id"], "status": {"$in": ["confirmed", "in_progress"]}, "payment_status": "paid"}
+    elif user.get("role") == "expert":
+        query = {"expert_id": user["user_id"], "status": {"$in": ["confirmed", "in_progress"]}, "payment_status": "paid"}
+    else:
+        return
+
+    bookings = await db.bookings.find(query, {"_id": 0}).to_list(200)
+    for booking in bookings:
+        slot_dt = parse_slot_datetime(booking.get("selected_slot"))
+        if not slot_dt:
+            continue
+        mins_to_slot = (slot_dt - now).total_seconds() / 60
+        flags = booking.get("notification_flags", {})
+
+        if 0 < mins_to_slot <= 60 and not flags.get("reminder_60m_sent"):
+            await create_notification(
+                user_id=user["user_id"],
+                category="call_reminder",
+                event_type="call_reminder_60m",
+                title="Consultation starts soon",
+                body=f"Your consultation for booking {booking['booking_id']} starts within 60 minutes.",
+                booking_id=booking["booking_id"],
+                issue_id=booking.get("issue_id"),
+                metadata={"minutes_remaining": int(max(mins_to_slot, 1))},
+                dedupe_key=f"reminder_60m:{booking['booking_id']}:{user['user_id']}"
+            )
+            flags["reminder_60m_sent"] = True
+
+        if 60 < mins_to_slot <= 24 * 60 and not flags.get("reminder_24h_sent"):
+            await create_notification(
+                user_id=user["user_id"],
+                category="call_reminder",
+                event_type="call_reminder_24h",
+                title="Consultation reminder",
+                body=f"You have an upcoming consultation within 24 hours for booking {booking['booking_id']}.",
+                booking_id=booking["booking_id"],
+                issue_id=booking.get("issue_id"),
+                metadata={"hours_remaining": round(mins_to_slot / 60, 1)},
+                dedupe_key=f"reminder_24h:{booking['booking_id']}:{user['user_id']}"
+            )
+            flags["reminder_24h_sent"] = True
+
+        if flags != booking.get("notification_flags", {}):
+            await db.bookings.update_one({"booking_id": booking["booking_id"]}, {"$set": {"notification_flags": flags}})
+
+@sio.event
+async def connect(sid, environ, auth):
+    token = None
+    if isinstance(auth, dict):
+        token = auth.get("token")
+
+    if not token:
+        query = parse_qs(environ.get("QUERY_STRING", ""))
+        token_values = query.get("token")
+        if token_values:
+            token = token_values[0]
+
+    if not token:
+        auth_header = environ.get("HTTP_AUTHORIZATION", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "", 1)
+
+    user = await get_user_from_token(token)
+    if not user:
+        raise ConnectionRefusedError("Unauthorized")
+
+    await sio.save_session(sid, {"user_id": user["user_id"], "role": user.get("role")})
+    await sio.enter_room(sid, f"user_{user['user_id']}")
+
+@sio.event
+async def join_booking(sid, data):
+    session = await sio.get_session(sid)
+    user_id = session.get("user_id")
+    booking_id = (data or {}).get("booking_id")
+    if not booking_id:
+        return {"ok": False, "error": "booking_id is required"}
+
+    booking = await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not booking:
+        return {"ok": False, "error": "Booking not found"}
+
+    if booking["client_id"] != user_id and booking["expert_id"] != user_id:
+        return {"ok": False, "error": "Not authorized"}
+
+    await sio.enter_room(sid, f"booking_{booking_id}")
+    return {"ok": True}
+
 # ===================
 # AI MODERATION
 # ===================
@@ -225,6 +553,7 @@ async def register(user: UserCreate):
             "bio": "",
             "hourly_rate": 500,
             "cities": [user.city] if user.city else [],
+            "whatsapp_number": "",
             "is_verified": False,
             "kyc_status": "pending",
             "total_consultations": 0,
@@ -328,6 +657,7 @@ async def google_login(payload: GoogleLoginRequest):
                 "bio": "",
                 "hourly_rate": 500,
                 "cities": [],
+                "whatsapp_number": "",
                 "is_verified": False,
                 "kyc_status": "pending",
                 "total_consultations": 0,
@@ -384,7 +714,7 @@ async def update_expert_profile(request: Request, user: dict = Depends(get_curre
     await require_role(user, ["expert"])
     body = await request.json()
     
-    allowed_fields = ["expertise", "experience_years", "bio", "hourly_rate", "cities"]
+    allowed_fields = ["expertise", "experience_years", "bio", "hourly_rate", "cities", "whatsapp_number"]
     update_data = {k: v for k, v in body.items() if k in allowed_fields}
     
     if update_data:
@@ -394,6 +724,60 @@ async def update_expert_profile(request: Request, user: dict = Depends(get_curre
         )
     
     return await db.expert_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+
+# ===================
+# NOTIFICATION ROUTES
+# ===================
+
+@api_router.get("/notifications")
+async def list_notifications(
+    unread_only: bool = False,
+    limit: int = 50,
+    user: dict = Depends(get_current_user)
+):
+    await sync_due_call_reminders_for_user(user)
+    safe_limit = min(max(limit, 1), 100)
+    query = {"user_id": user["user_id"]}
+    if unread_only:
+        query["is_read"] = False
+
+    notifications = await db.notifications.find(query, {"_id": 0}).sort("created_at", -1).limit(safe_limit).to_list(safe_limit)
+    return notifications
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_notifications_count(user: dict = Depends(get_current_user)):
+    await sync_due_call_reminders_for_user(user)
+    unread = await db.notifications.count_documents({"user_id": user["user_id"], "is_read": False})
+    return {"unread_count": unread}
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user: dict = Depends(get_current_user)):
+    result = await db.notifications.update_one(
+        {"notification_id": notification_id, "user_id": user["user_id"]},
+        {"$set": {"is_read": True, "read_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Notification marked as read"}
+
+@api_router.put("/notifications/read")
+async def mark_notifications_read(payload: NotificationReadRequest, user: dict = Depends(get_current_user)):
+    if not payload.notification_ids:
+        return {"message": "No notifications selected", "updated": 0}
+
+    result = await db.notifications.update_many(
+        {"notification_id": {"$in": payload.notification_ids}, "user_id": user["user_id"]},
+        {"$set": {"is_read": True, "read_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Notifications marked as read", "updated": result.modified_count}
+
+@api_router.put("/notifications/read-all")
+async def mark_all_notifications_read(user: dict = Depends(get_current_user)):
+    result = await db.notifications.update_many(
+        {"user_id": user["user_id"], "is_read": False},
+        {"$set": {"is_read": True, "read_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "All notifications marked as read", "updated": result.modified_count}
 
 # ===================
 # ISSUE ROUTES
@@ -532,6 +916,17 @@ async def create_offer(offer: OfferCreate, user: dict = Depends(get_current_user
     
     # Update issue offers count
     await db.issues.update_one({"issue_id": offer.issue_id}, {"$inc": {"offers_count": 1}})
+
+    await create_notification(
+        user_id=issue["user_id"],
+        category="offer",
+        event_type="offer_received",
+        title="New offer received",
+        body=f"An expert sent a new offer for your issue '{issue['title']}'.",
+        issue_id=offer.issue_id,
+        offer_id=offer_id,
+        metadata={"expert_id": user["user_id"], "price": offer.price}
+    )
     
     return await db.offers.find_one({"offer_id": offer_id}, {"_id": 0})
 
@@ -569,6 +964,31 @@ async def accept_offer(offer_id: str, user: dict = Depends(get_current_user)):
     
     # Update issue status
     await db.issues.update_one({"issue_id": offer["issue_id"]}, {"$set": {"status": "in_progress"}})
+
+    await create_notification(
+        user_id=offer["expert_id"],
+        category="offer",
+        event_type="offer_accepted",
+        title="Your offer was accepted",
+        body="Client accepted your offer. You can proceed to booking and consultation.",
+        issue_id=offer["issue_id"],
+        offer_id=offer_id
+    )
+
+    rejected_offers = await db.offers.find(
+        {"issue_id": offer["issue_id"], "offer_id": {"$ne": offer_id}},
+        {"_id": 0, "offer_id": 1, "expert_id": 1}
+    ).to_list(200)
+    for rejected in rejected_offers:
+        await create_notification(
+            user_id=rejected["expert_id"],
+            category="offer",
+            event_type="offer_rejected",
+            title="Offer not selected",
+            body="Client selected a different offer for this issue.",
+            issue_id=offer["issue_id"],
+            offer_id=rejected["offer_id"]
+        )
     
     return {"message": "Offer accepted"}
 
@@ -599,6 +1019,8 @@ async def create_booking(booking: BookingCreate, user: dict = Depends(get_curren
         "selected_slot": booking.selected_slot,
         "status": "pending_payment",  # pending_payment, confirmed, in_progress, completed, cancelled, disputed
         "payment_status": "pending",  # pending, paid, refunded
+        "call_audit": [],
+        "call_summary": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
@@ -615,6 +1037,31 @@ async def create_booking(booking: BookingCreate, user: dict = Depends(get_curren
     
     # Update issue status
     await db.issues.update_one({"issue_id": offer["issue_id"]}, {"$set": {"status": "in_progress"}})
+
+    await create_notifications_bulk([
+        {
+            "user_id": user["user_id"],
+            "category": "booking",
+            "event_type": "booking_created",
+            "title": "Booking created",
+            "body": f"Your consultation booking {booking_id} is created. Complete payment to confirm.",
+            "booking_id": booking_id,
+            "issue_id": offer["issue_id"],
+            "offer_id": booking.offer_id,
+            "metadata": {"status": "pending_payment"}
+        },
+        {
+            "user_id": offer["expert_id"],
+            "category": "booking",
+            "event_type": "booking_created",
+            "title": "New consultation booking",
+            "body": f"A client created booking {booking_id}. Waiting for payment confirmation.",
+            "booking_id": booking_id,
+            "issue_id": offer["issue_id"],
+            "offer_id": booking.offer_id,
+            "metadata": {"status": "pending_payment"}
+        }
+    ])
     
     return await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
 
@@ -633,6 +1080,8 @@ async def get_bookings(user: dict = Depends(get_current_user), status: Optional[
     
     # Enrich with issue and user info
     for booking in bookings:
+        booking["call_audit"] = booking.get("call_audit", [])
+        booking["call_summary"] = booking.get("call_summary")
         issue = await db.issues.find_one({"issue_id": booking["issue_id"]}, {"_id": 0})
         booking["issue"] = issue
         
@@ -655,6 +1104,9 @@ async def get_booking(booking_id: str, user: dict = Depends(get_current_user)):
     
     if booking["client_id"] != user["user_id"] and booking["expert_id"] != user["user_id"] and user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
+
+    booking["call_audit"] = booking.get("call_audit", [])
+    booking["call_summary"] = booking.get("call_summary")
     
     # Get issue
     issue = await db.issues.find_one({"issue_id": booking["issue_id"]}, {"_id": 0})
@@ -690,7 +1142,18 @@ async def update_booking_status(booking_id: str, request: Request, user: dict = 
     current_status = booking["status"]
     if new_status not in valid_transitions.get(current_status, []):
         raise HTTPException(status_code=400, detail=f"Invalid status transition from {current_status} to {new_status}")
-    
+
+    if new_status in {"in_progress", "completed"} and booking["expert_id"] != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only the expert can update this consultation status")
+
+    if new_status == "completed":
+        accepted_call_count = await db.call_requests.count_documents({
+            "booking_id": booking_id,
+            "status": "accepted"
+        })
+        if accepted_call_count > 0 and not booking.get("call_summary"):
+            raise HTTPException(status_code=400, detail="Post-call summary is required before marking consultation completed")
+
     await db.bookings.update_one({"booking_id": booking_id}, {"$set": {"status": new_status}})
     
     # If completed, update issue and expert stats
@@ -700,8 +1163,59 @@ async def update_booking_status(booking_id: str, request: Request, user: dict = 
             {"user_id": booking["expert_id"]},
             {"$inc": {"total_consultations": 1}}
         )
+
+    recipient_id = booking["client_id"] if user["user_id"] == booking["expert_id"] else booking["expert_id"]
+    await create_notification(
+        user_id=recipient_id,
+        category="booking",
+        event_type="booking_status_updated",
+        title="Consultation status updated",
+        body=f"Booking {booking_id} status changed to {new_status.replace('_', ' ')}.",
+        booking_id=booking_id,
+        issue_id=booking["issue_id"],
+        metadata={"status": new_status, "updated_by": user["user_id"]}
+    )
     
     return {"message": f"Booking status updated to {new_status}"}
+
+@api_router.post("/bookings/{booking_id}/call-summary")
+async def add_call_summary(booking_id: str, summary: CallSummaryCreate, user: dict = Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    if booking["expert_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the expert can submit summary")
+
+    if booking.get("payment_status") != "paid":
+        raise HTTPException(status_code=400, detail="Summary can be submitted only for paid consultations")
+
+    content = (summary.content or "").strip()
+    if len(content) < 20:
+        raise HTTPException(status_code=400, detail="Summary must be at least 20 characters")
+
+    summary_doc = {
+        "content": content,
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.bookings.update_one({"booking_id": booking_id}, {"$set": {"call_summary": summary_doc}})
+    await append_call_audit(
+        booking_id=booking_id,
+        event_type="call_summary_submitted",
+        actor_user_id=user["user_id"],
+        metadata={"length": len(content)}
+    )
+    await create_notification(
+        user_id=booking["client_id"],
+        category="call",
+        event_type="call_summary_submitted",
+        title="Post-call summary available",
+        body="Your expert submitted a written summary for this consultation.",
+        booking_id=booking_id,
+        issue_id=booking["issue_id"]
+    )
+    return {"message": "Call summary submitted", "call_summary": summary_doc}
 
 # ===================
 # PAYMENT ROUTES (Razorpay)
@@ -772,6 +1286,30 @@ async def verify_payment(request: Request, user: dict = Depends(get_current_user
         {"booking_id": payment["booking_id"]},
         {"$set": {"status": "confirmed", "payment_status": "paid"}}
     )
+
+    paid_booking = await db.bookings.find_one({"booking_id": payment["booking_id"]}, {"_id": 0})
+    await create_notifications_bulk([
+        {
+            "user_id": paid_booking["client_id"],
+            "category": "payment",
+            "event_type": "payment_success",
+            "title": "Payment successful",
+            "body": f"Payment confirmed for booking {paid_booking['booking_id']}.",
+            "booking_id": paid_booking["booking_id"],
+            "issue_id": paid_booking["issue_id"],
+            "metadata": {"amount": paid_booking["price"]}
+        },
+        {
+            "user_id": paid_booking["expert_id"],
+            "category": "payment",
+            "event_type": "payment_success",
+            "title": "Client payment confirmed",
+            "body": f"Client payment is confirmed for booking {paid_booking['booking_id']}.",
+            "booking_id": paid_booking["booking_id"],
+            "issue_id": paid_booking["issue_id"],
+            "metadata": {"amount": paid_booking["price"]}
+        }
+    ])
     
     return {"message": "Payment verified", "status": "paid"}
 
@@ -803,6 +1341,17 @@ async def send_chat_message(message: ChatMessage, user: dict = Depends(get_curre
     }
     
     await db.chat_messages.insert_one(msg_doc)
+    recipient_id = booking["expert_id"] if sender_type == "client" else booking["client_id"]
+    await create_notification(
+        user_id=recipient_id,
+        category="chat",
+        event_type="message_received",
+        title="New message in consultation chat",
+        body=f"You have a new message in booking {message.booking_id}.",
+        booking_id=message.booking_id,
+        issue_id=booking["issue_id"],
+        metadata={"sender_type": sender_type, "message_id": msg_id}
+    )
     return await db.chat_messages.find_one({"message_id": msg_id}, {"_id": 0})
 
 @api_router.get("/chat/messages/{booking_id}")
@@ -816,6 +1365,280 @@ async def get_chat_messages(booking_id: str, user: dict = Depends(get_current_us
     
     messages = await db.chat_messages.find({"booking_id": booking_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
     return messages
+
+@api_router.post("/calls/request")
+async def create_call_request(call_request: CallRequestCreate, user: dict = Depends(get_current_user)):
+    if call_request.call_type not in {"voice", "video"}:
+        raise HTTPException(status_code=400, detail="Invalid call type")
+
+    booking = await get_booking_for_call(call_request.booking_id, user)
+    if booking["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the client can initiate calls")
+
+    total_attempts = await db.call_requests.count_documents({
+        "booking_id": call_request.booking_id,
+        "initiated_by": user["user_id"]
+    })
+    if total_attempts >= MAX_CALL_REQUESTS_PER_BOOKING:
+        raise HTTPException(status_code=400, detail="Maximum call requests reached for this consultation")
+
+    latest_attempt = await db.call_requests.find_one(
+        {"booking_id": call_request.booking_id, "initiated_by": user["user_id"]},
+        {"_id": 0},
+        sort=[("created_at", -1)]
+    )
+    if latest_attempt:
+        reference_time = parse_iso_datetime(latest_attempt.get("resolved_at")) or parse_iso_datetime(latest_attempt.get("created_at"))
+        if reference_time:
+            elapsed_seconds = (datetime.now(timezone.utc) - reference_time).total_seconds()
+            if elapsed_seconds < CALL_REQUEST_RETRY_COOLDOWN_SECONDS:
+                wait_seconds = int(CALL_REQUEST_RETRY_COOLDOWN_SECONDS - elapsed_seconds)
+                raise HTTPException(status_code=400, detail=f"Please wait {wait_seconds}s before sending another call request")
+
+    await expire_stale_call_requests(call_request.booking_id)
+    existing_request = await db.call_requests.find_one(
+        {
+            "booking_id": call_request.booking_id,
+            "status": {"$in": list(CALL_REQUEST_ACTIVE_STATUSES)}
+        },
+        {"_id": 0}
+    )
+    if existing_request:
+        raise HTTPException(status_code=400, detail="A call request is already active for this consultation")
+
+    now = datetime.now(timezone.utc)
+    call_id = generate_id("call_")
+    call_doc = {
+        "call_id": call_id,
+        "booking_id": call_request.booking_id,
+        "issue_id": booking["issue_id"],
+        "client_id": booking["client_id"],
+        "expert_id": booking["expert_id"],
+        "initiated_by": user["user_id"],
+        "target_user_id": booking["expert_id"],
+        "call_type": call_request.call_type,
+        "status": "requested",
+        "created_at": now.isoformat(),
+        "created_at_dt": now,
+        "expires_at": (now + timedelta(seconds=CALL_REQUEST_EXPIRE_SECONDS)).isoformat(),
+        "accepted_at": None,
+        "resolved_at": None,
+        "resolution_reason": None
+    }
+    await db.call_requests.insert_one(call_doc)
+    clean_call = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0, "created_at_dt": 0})
+    await append_call_audit(
+        booking_id=call_request.booking_id,
+        event_type="call_requested",
+        actor_user_id=user["user_id"],
+        metadata={"call_id": call_id, "call_type": call_request.call_type}
+    )
+    await emit_call_event(call_request.booking_id, "call_requested", clean_call)
+    await create_notifications_bulk([
+        {
+            "user_id": booking["expert_id"],
+            "category": "call",
+            "event_type": "call_requested",
+            "title": f"Incoming {call_request.call_type} call request",
+            "body": "Client wants to start a consultation call.",
+            "booking_id": call_request.booking_id,
+            "issue_id": booking["issue_id"],
+            "call_id": call_id,
+            "metadata": {"call_type": call_request.call_type}
+        },
+        {
+            "user_id": booking["client_id"],
+            "category": "call",
+            "event_type": "call_requested",
+            "title": "Call request sent",
+            "body": f"Your {call_request.call_type} call request was sent to expert.",
+            "booking_id": call_request.booking_id,
+            "issue_id": booking["issue_id"],
+            "call_id": call_id,
+            "metadata": {"call_type": call_request.call_type}
+        }
+    ])
+    return clean_call
+
+@api_router.get("/calls/{booking_id}")
+async def list_call_requests(booking_id: str, user: dict = Depends(get_current_user)):
+    await get_booking_for_call(booking_id, user)
+    return await get_latest_call_requests(booking_id)
+
+@api_router.post("/calls/{call_id}/accept")
+async def accept_call_request(call_id: str, action: Optional[CallRequestAction] = None, user: dict = Depends(get_current_user)):
+    call_request = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if not call_request:
+        raise HTTPException(status_code=404, detail="Call request not found")
+
+    booking = await get_booking_for_call(call_request["booking_id"], user)
+    if booking["expert_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the expert can accept the call")
+
+    await expire_stale_call_requests(call_request["booking_id"])
+    refreshed = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if refreshed["status"] not in CALL_REQUEST_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Call request is already {refreshed['status']}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.call_requests.update_one(
+        {"call_id": call_id},
+        {
+            "$set": {
+                "status": "accepted",
+                "accepted_at": now,
+                "resolved_at": now,
+                "resolution_reason": action.reason if action else None
+            }
+        }
+    )
+    clean_call = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0, "created_at_dt": 0})
+    await append_call_audit(
+        booking_id=call_request["booking_id"],
+        event_type="call_accepted",
+        actor_user_id=user["user_id"],
+        metadata={"call_id": call_id, "call_type": clean_call["call_type"]}
+    )
+    await emit_call_event(call_request["booking_id"], "call_accepted", clean_call)
+    await create_notifications_bulk([
+        {
+            "user_id": call_request["client_id"],
+            "category": "call",
+            "event_type": "call_accepted",
+            "title": "Call request accepted",
+            "body": f"Expert accepted your {clean_call['call_type']} call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        },
+        {
+            "user_id": call_request["expert_id"],
+            "category": "call",
+            "event_type": "call_accepted",
+            "title": "Call accepted",
+            "body": f"You accepted a client {clean_call['call_type']} call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        }
+    ])
+    return clean_call
+
+@api_router.post("/calls/{call_id}/reject")
+async def reject_call_request(call_id: str, action: Optional[CallRequestAction] = None, user: dict = Depends(get_current_user)):
+    call_request = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if not call_request:
+        raise HTTPException(status_code=404, detail="Call request not found")
+
+    booking = await get_booking_for_call(call_request["booking_id"], user)
+    if booking["expert_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the expert can reject the call")
+
+    await expire_stale_call_requests(call_request["booking_id"])
+    refreshed = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if refreshed["status"] not in CALL_REQUEST_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Call request is already {refreshed['status']}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.call_requests.update_one(
+        {"call_id": call_id},
+        {
+            "$set": {
+                "status": "rejected",
+                "resolved_at": now,
+                "resolution_reason": action.reason or "Expert declined the call"
+            }
+        }
+    )
+    clean_call = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0, "created_at_dt": 0})
+    await append_call_audit(
+        booking_id=call_request["booking_id"],
+        event_type="call_rejected",
+        actor_user_id=user["user_id"],
+        metadata={"call_id": call_id, "call_type": clean_call["call_type"], "reason": clean_call.get("resolution_reason")}
+    )
+    await emit_call_event(call_request["booking_id"], "call_rejected", clean_call)
+    await create_notifications_bulk([
+        {
+            "user_id": call_request["client_id"],
+            "category": "call",
+            "event_type": "call_rejected",
+            "title": "Call request declined",
+            "body": clean_call.get("resolution_reason") or "Expert declined your call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        },
+        {
+            "user_id": call_request["expert_id"],
+            "category": "call",
+            "event_type": "call_rejected",
+            "title": "Call request rejected",
+            "body": "You rejected the client call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        }
+    ])
+    return clean_call
+
+@api_router.post("/calls/{call_id}/cancel")
+async def cancel_call_request(call_id: str, action: Optional[CallRequestAction] = None, user: dict = Depends(get_current_user)):
+    call_request = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if not call_request:
+        raise HTTPException(status_code=404, detail="Call request not found")
+
+    booking = await get_booking_for_call(call_request["booking_id"], user)
+    if booking["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the client can cancel the call")
+
+    await expire_stale_call_requests(call_request["booking_id"])
+    refreshed = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0})
+    if refreshed["status"] not in CALL_REQUEST_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Call request is already {refreshed['status']}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.call_requests.update_one(
+        {"call_id": call_id},
+        {
+            "$set": {
+                "status": "cancelled",
+                "resolved_at": now,
+                "resolution_reason": action.reason or "Client cancelled the call request"
+            }
+        }
+    )
+    clean_call = await db.call_requests.find_one({"call_id": call_id}, {"_id": 0, "created_at_dt": 0})
+    await append_call_audit(
+        booking_id=call_request["booking_id"],
+        event_type="call_cancelled",
+        actor_user_id=user["user_id"],
+        metadata={"call_id": call_id, "call_type": clean_call["call_type"], "reason": clean_call.get("resolution_reason")}
+    )
+    await emit_call_event(call_request["booking_id"], "call_cancelled", clean_call)
+    await create_notifications_bulk([
+        {
+            "user_id": call_request["expert_id"],
+            "category": "call",
+            "event_type": "call_cancelled",
+            "title": "Client cancelled call request",
+            "body": "Client cancelled the pending call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        },
+        {
+            "user_id": call_request["client_id"],
+            "category": "call",
+            "event_type": "call_cancelled",
+            "title": "Call request cancelled",
+            "body": "You cancelled your pending call request.",
+            "booking_id": call_request["booking_id"],
+            "issue_id": call_request["issue_id"],
+            "call_id": call_id
+        }
+    ])
+    return clean_call
 
 # ===================
 # REVIEW ROUTES
@@ -858,6 +1681,17 @@ async def create_review(review: ReviewCreate, user: dict = Depends(get_current_u
     await db.expert_profiles.update_one(
         {"user_id": booking["expert_id"]},
         {"$set": {"avg_rating": round(avg_rating, 2), "ratings_count": len(expert_reviews)}}
+    )
+
+    await create_notification(
+        user_id=booking["expert_id"],
+        category="review",
+        event_type="review_received",
+        title="New client review",
+        body=f"You received a {review.rating}-star review.",
+        booking_id=review.booking_id,
+        issue_id=booking["issue_id"],
+        metadata={"rating": review.rating}
     )
     
     return await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
@@ -981,10 +1815,24 @@ async def admin_verify_expert(user_id: str, request: Request, user: dict = Depen
             {"user_id": user_id},
             {"$set": {"is_verified": True, "kyc_status": "approved"}}
         )
+        await create_notification(
+            user_id=user_id,
+            category="system",
+            event_type="expert_verification_approved",
+            title="Expert verification approved",
+            body="Your expert profile is approved and now marked as verified."
+        )
     elif action == "reject":
         await db.expert_profiles.update_one(
             {"user_id": user_id},
             {"$set": {"kyc_status": "rejected"}}
+        )
+        await create_notification(
+            user_id=user_id,
+            category="system",
+            event_type="expert_verification_rejected",
+            title="Expert verification update",
+            body="Your verification request was rejected. Please review profile details and resubmit."
         )
     
     return {"message": f"Expert {action}d"}
@@ -1053,3 +1901,6 @@ async def startup_tasks():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+# Expose a single ASGI app that serves both REST (FastAPI) and Socket.IO.
+app = socketio.ASGIApp(sio, app)
